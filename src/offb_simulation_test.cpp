@@ -50,11 +50,17 @@
 #define SCAN_VISION_DISTANCE 4
 bool scan_to_get_pos = false;
 
+//time limited setting
+const unsigned SUB_PERIOD=55;
+ros::Time last_subtask_time=-10;
+bool subtimer_flag=true;
+bool get_num_flag=false;
+
 #include <math.h>
 
 #include <std_msgs/Int32.h>
 
-#define MAX_FLIGHT_TIME 240 /* max flight time of whole mission. */
+#define MAX_FLIGHT_TIME 540 /* max flight time of whole mission. */
 
 #include <state_machine/FailureRecord.h>
 #define FAILURE_REPAIR 1    /* FAILURE_REPAIR: 0: never repair errores; 1: repair errors. */
@@ -695,11 +701,12 @@ int main(int argc, char **argv)
 			state_machine_func();
 
             /* system timer. TODO! */
+            /***********************time_limite******************************/
             if(1)
             {
                 /* set time deadline. */
                 /* mission timer(5 loops). -libn */
-                if(ros::Time::now() - mission_timer_start_time > ros::Duration(MAX_FLIGHT_TIME + mission_failure_acount * 30.0f)
+                if(ros::Time::now() - mission_timer_start_time > ros::Duration(MAX_FLIGHT_TIME)
                         && force_home_enable == true)
                 {
                     force_home_enable = false; /* force once! */
@@ -710,13 +717,14 @@ int main(int argc, char **argv)
                     mission_last_time = ros::Time::now();   /* start counting time(for hovering). */
                 }
                 /* subtask timer(1 loop). -libn */
-                if(!loop_timer_disable)
+                if(subtimer_flag)
                 {
-                    if(ros::Time::now() - mission_timer_start_time > ros::Duration((float)(loop*30.0f+50.0f)) &&
-                       ros::Time::now() - mission_timer_start_time < ros::Duration(MAX_FLIGHT_TIME + mission_failure_acount * 30.0f) &&
+                    if(ros::Time::now() - mission_timer_start_time >= last_subtask_time + SUB_PERIOD &&
+                       ros::Time::now() - mission_timer_start_time < ros::Duration(MAX_FLIGHT_TIME) &&
                             loop <= 5)  /* stop subtask timer when dealing with failures. */
                     {
                         /* error recorded! */
+                        subtimer_flag=false;
                         mission_failure_acount++;
                         failure[mission_failure_acount-1].num = current_mission_num;
                         failure[mission_failure_acount-1].state = current_mission_state;
@@ -724,14 +732,30 @@ int main(int argc, char **argv)
                         #ifdef NO_ROS_DEBUG
                         ROS_INFO("loop timeout -> start next loop");
                         #endif
+                        get_num_flag=true;
                         current_mission_state = mission_observe_point_go;	/* loop timeout, forced to switch to next loop. -libn */
                         /* TODO: mission failure recorded(using switch/case). -libn */
 
                     }
                 }
+                if(get_num_flag)
+                {
+                   if(loop<=5 && ros::Time::now()-mission_timer_start_time>=last_subtask_time+SUB_PERIOD+20&&
+                           (current_mission_state==mission_observe_point_go||current_mission_state==mission_observe_num_wait))
+                   {
+                      if(loop>=1&&loop<=4)
+                      {
+                          last_subtask_time+=SUB_PERIOD;
+                      }
+                      if(loop==5)
+                          current_mission_state=mission_num_done;
+                      loop++;
+                   }
+                }
 
             }
 
+            /**************************************************************************************/
             if(1)   /* ROS_INFO display. */
             {
                 #ifdef NO_ROS_DEBUG
@@ -1112,6 +1136,7 @@ void state_machine_func(void)
                 }
                 else
                 {
+                    get_num_flag=true;
                     current_mission_state = mission_observe_point_go; // current_mission_state++;
                     mission_last_time = ros::Time::now();
                     loop++;
@@ -1162,12 +1187,7 @@ void state_machine_func(void)
             }
             break;
         case mission_observe_num_wait:
-            if(loop == 5 &&
-              (ros::Time::now() - mission_timer_start_time > ros::Duration(180)))
-            {
-                current_mission_state = mission_num_done;
-                break;
-            }
+
         	pose_pub.pose.position.x = setpoint_A.pose.position.x;
 			pose_pub.pose.position.y = setpoint_A.pose.position.y;
 			pose_pub.pose.position.z = setpoint_A.pose.position.z;
@@ -1205,7 +1225,9 @@ void state_machine_func(void)
                 if(ros::Time::now() - mission_last_time > ros::Duration(1))	/* hover for 1 seconds. -libn */
                 {
                     current_mission_state = mission_num_search; // current_mission_state++;
-
+                    get_num_flag=false;
+                    last_subtask_time=ros::Time::now();
+                    subtimer_flag=true;   //start time for task
                     /* change and publish camera_switch_data for next subtask. */
                     /*  camera_switch: 0: mission closed; 1: vision_one_num_get; 2: vision_num_scan. -libn */
                     camera_switch_data.data = 2;
@@ -1413,7 +1435,7 @@ void state_machine_func(void)
             pose_pub.pose.position.y = board10.drawingboard[current_mission_num].y - SPRAY_DISTANCE * sin(yaw_sp_calculated_m2p_data.yaw_sp);
             pose_pub.pose.position.z = board10.drawingboard[current_mission_num].z + SAFE_HEIGHT_DISTANCE;
 
-            loop_timer_disable = true;
+            subtimer_flag = false;
             /* add height adjustment  --start. */
             if(ros::Time::now() - mission_last_time > ros::Duration(0.5))	/* spray for 5 seconds. -libn */
             {
@@ -1427,7 +1449,7 @@ void state_machine_func(void)
             {
                 current_mission_state = mission_hover_after_stretch_back; // current_mission_state++;
                 mission_last_time = ros::Time::now();
-                loop_timer_disable = false; /* enable loop_timer. */
+                subtimer_flag = true; /* enable loop_timer. */
             }
             break;
         case mission_hover_after_stretch_back:
@@ -1443,6 +1465,7 @@ void state_machine_func(void)
                 }
                 else
                 {
+                    get_num_flag=true;
                     current_mission_state = mission_observe_point_go; // current_mission_state++;
                 }
             }
